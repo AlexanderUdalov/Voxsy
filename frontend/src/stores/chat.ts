@@ -1,4 +1,4 @@
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { defineStore } from 'pinia'
 import type { ChatMessage } from '../types'
 import { useSettingsStore } from './settings'
@@ -43,10 +43,76 @@ function toApiMessage(
   return { role: m.role, content: m.content }
 }
 
+const LS_CHAT_MESSAGES = 'voxsy_chatMessages'
+
+function trimTrailingEmptyAssistant(msgs: ChatMessage[]): ChatMessage[] {
+  const out = [...msgs]
+  while (
+    out.length > 0
+    && out[out.length - 1]!.role === 'assistant'
+    && !out[out.length - 1]!.content.trim()
+  ) {
+    out.pop()
+  }
+  return out
+}
+
+function loadPersistedMessages(): ChatMessage[] {
+  try {
+    const raw = localStorage.getItem(LS_CHAT_MESSAGES)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return []
+    const out: ChatMessage[] = []
+    for (const item of parsed) {
+      if (!item || typeof item !== 'object') continue
+      const o = item as Record<string, unknown>
+      if (o.role !== 'user' && o.role !== 'assistant') continue
+      const id = typeof o.id === 'string' ? o.id : crypto.randomUUID()
+      let content = typeof o.content === 'string' ? o.content : ''
+      const source =
+        o.source === 'voice' || o.source === 'text' ? o.source : undefined
+      const msg: ChatMessage = { id, role: o.role, content }
+      if (source) msg.source = source
+      if (msg.role === 'user' && msg.source === 'voice' && !content.trim()) {
+        content = '(Voice message)'
+        msg.content = content
+      }
+      out.push(msg)
+    }
+    return trimTrailingEmptyAssistant(out)
+  } catch {
+    return []
+  }
+}
+
+function persistMessages(msgs: ChatMessage[]) {
+  if (msgs.length === 0) {
+    localStorage.removeItem(LS_CHAT_MESSAGES)
+    return
+  }
+  const serializable = msgs.map(({ id, role, content, source }) => ({
+    id,
+    role,
+    content,
+    ...(source ? { source } : {}),
+  }))
+  localStorage.setItem(LS_CHAT_MESSAGES, JSON.stringify(serializable))
+}
+
 export const useChatStore = defineStore('chat', () => {
   const settings = useSettingsStore()
-  const messages = ref<ChatMessage[]>([])
+  const messages = ref<ChatMessage[]>(loadPersistedMessages())
   const isStreaming = ref(false)
+
+  watch(
+    messages,
+    (msgs) => {
+      if (isStreaming.value) return
+      persistMessages(msgs)
+    },
+    { deep: true },
+  )
 
   async function sendMessage(
     content: string,
@@ -127,6 +193,7 @@ export const useChatStore = defineStore('chat', () => {
         `Error: ${error instanceof Error ? error.message : String(error)}`
     } finally {
       isStreaming.value = false
+      persistMessages(messages.value)
     }
   }
 

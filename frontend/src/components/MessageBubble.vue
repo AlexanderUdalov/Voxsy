@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { ref, onUnmounted } from 'vue'
+import { ref, onUnmounted, watch } from 'vue'
 import type { ChatMessage } from '../types'
+import { useChatStore } from '../stores/chat'
 import { useSettingsStore } from '../stores/settings'
 import { synthesizeSpeech } from '../services/api'
 import VoiceSchematicPlayer from './VoiceSchematicPlayer.vue'
 
 const props = defineProps<{ message: ChatMessage }>()
+const chatStore = useChatStore()
 const settings = useSettingsStore()
 
 const isSpeaking = ref(false)
@@ -42,13 +44,11 @@ function stopSpeaking() {
   cleanupSpeaking()
 }
 
-async function speak() {
-  if (isSpeaking.value) {
-    stopSpeaking()
-    return
-  }
+async function playTts() {
   const raw = props.message.content.trim()
   if (!raw) return
+
+  stopSpeaking()
 
   const ac = new AbortController()
   speakAbort.value = ac
@@ -87,6 +87,27 @@ async function speak() {
     cleanupSpeaking()
   }
 }
+
+async function speak() {
+  if (isSpeaking.value) {
+    stopSpeaking()
+    return
+  }
+  await playTts()
+}
+
+watch(
+  () => chatStore.isStreaming,
+  (streaming, wasStreaming) => {
+    if (wasStreaming !== true || streaming !== false) return
+    if (props.message.role !== 'assistant') return
+    const msgs = chatStore.messages
+    const last = msgs[msgs.length - 1]
+    if (!last || last.id !== props.message.id) return
+    if (!props.message.content.trim()) return
+    void playTts()
+  },
+)
 
 onUnmounted(() => {
   stopSpeaking()
