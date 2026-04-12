@@ -1,0 +1,97 @@
+# Deploy backend + static frontend to a VPS (SCP + SSH rsync).
+#
+# GitHub: Repository secrets
+#   VPS_HOST, VPS_USER, VPS_KEY   — SSH access (key: private key, PEM)
+#   OPENAI_API_KEY                — maps to OpenAI__ApiKey on the server
+#
+# GitHub: Repository variables (Settings → Secrets and variables → Actions → Variables)
+#   VITE_API_BASE_URL             — public API URL baked into the SPA (e.g. https://api.example.com)
+#   VOXSY_CORS_ORIGIN             — browser origin allowed by CORS (e.g. https://example.com where the SPA is served)
+#
+# On the VPS: create a systemd unit named voxsy-backend (or change the last step) that runs the published DLL
+# from /var/www/voxsy/backend/ (e.g. ExecStart=/usr/bin/dotnet /var/www/voxsy/backend/Voxsy.dll).
+
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Publish Backend
+        run: dotnet publish backend/Voxsy.csproj -c Release -o publish/backend
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build Frontend
+        env:
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+        run: |
+          if [ -z "$VITE_API_BASE_URL" ]; then
+            echo "::error::Set repository variable VITE_API_BASE_URL (public backend URL for the built SPA)"
+            exit 1
+          fi
+          npm ci --prefix frontend
+          npm run build --prefix frontend
+          mkdir -p publish/frontend
+          cp -r frontend/dist/* publish/frontend/
+
+      - name: Upload artifacts
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_KEY }}
+          source: "publish"
+          target: "/home/${{ secrets.VPS_USER }}"
+
+      - name: Deploy via rsync
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_KEY }}
+          script: |
+            mkdir -p /var/www/voxsy/backend /var/www/voxsy/frontend
+            rsync -av --delete ~/publish/backend/ /var/www/voxsy/backend/
+            rsync -av --delete ~/publish/frontend/ /var/www/voxsy/frontend/
+
+      - name: Update .env file on VPS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_KEY }}
+          script: |
+            set -e
+            ENV_FILE=/var/www/voxsy/backend/.env
+            echo "OpenAI__ApiKey=${{ secrets.OPENAI_API_KEY }}" > "$ENV_FILE"
+            CORS_ORIGIN='${{ vars.VOXSY_CORS_ORIGIN }}'
+            if [ -n "$CORS_ORIGIN" ]; then
+              echo "Cors__Origins__0=$CORS_ORIGIN" >> "$ENV_FILE"
+            fi
+
+      - name: Restart backend
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_KEY }}
+          script: |
+            sudo systemctl restart voxsy-backend
