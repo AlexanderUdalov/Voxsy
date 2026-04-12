@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import { useSettingsStore } from '../stores/settings'
 import { useChatStore } from '../stores/chat'
+import {
+  TEXT_CHAT_MODEL_OPTIONS,
+  VOICE_CHAT_MODEL_OPTIONS,
+  TTS_MODEL_OPTIONS,
+  TTS_VOICE_OPTIONS,
+} from '../lib/models'
 
 defineProps<{ open: boolean }>()
 const emit = defineEmits<{ 'update:open': [value: boolean] }>()
@@ -39,6 +45,64 @@ function close() {
           <div class="field">
             <label class="field-label">API Base URL</label>
             <input v-model="settings.apiBaseUrl" class="field-input" />
+          </div>
+
+          <div class="field">
+            <label class="field-label">Text chat model</label>
+            <select v-model="settings.textChatModel" class="field-input">
+              <option
+                v-for="opt in TEXT_CHAT_MODEL_OPTIONS"
+                :key="opt.value"
+                :value="opt.value"
+              >
+                {{ opt.label }}
+              </option>
+            </select>
+            <p class="field-hint">
+              Used for typed messages. Audio-only models reject plain text.
+            </p>
+          </div>
+
+          <div class="field">
+            <label class="field-label">Voice chat model</label>
+            <select v-model="settings.chatModel" class="field-input">
+              <option
+                v-for="opt in VOICE_CHAT_MODEL_OPTIONS"
+                :key="opt.value"
+                :value="opt.value"
+              >
+                {{ opt.label }}
+              </option>
+            </select>
+            <p class="field-hint">
+              Used when you send a recording; must accept audio input.
+            </p>
+          </div>
+
+          <div class="field">
+            <label class="field-label">Assistant voice (TTS model)</label>
+            <select v-model="settings.ttsModel" class="field-input">
+              <option
+                v-for="opt in TTS_MODEL_OPTIONS"
+                :key="opt.value"
+                :value="opt.value"
+              >
+                {{ opt.label }}
+              </option>
+            </select>
+          </div>
+
+          <div class="field">
+            <label class="field-label">Assistant voice (persona)</label>
+            <select v-model="settings.ttsVoice" class="field-input">
+              <option
+                v-for="opt in TTS_VOICE_OPTIONS"
+                :key="opt.value"
+                :value="opt.value"
+              >
+                {{ opt.label }}
+              </option>
+            </select>
           </div>
 
           <hr class="divider" />
@@ -108,6 +172,13 @@ function close() {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.field-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  margin: 0;
 }
 
 .field-label {

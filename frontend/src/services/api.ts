@@ -1,29 +1,26 @@
-export async function transcribeAudio(baseUrl: string, audioBlob: Blob): Promise<string> {
-  const formData = new FormData()
-  formData.append('file', audioBlob, 'recording.webm')
+export type ChatContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'input_audio'; input_audio: { data: string; format: string } }
 
-  const response = await fetch(`${baseUrl}/api/transcribe`, {
-    method: 'POST',
-    body: formData,
-  })
+export type ChatApiMessage = {
+  role: string
+  content: string | ChatContentPart[]
+}
 
-  if (!response.ok) {
-    const text = await response.text()
-    throw new Error(`Transcription failed (${response.status}): ${text}`)
-  }
-
-  const data = await response.json()
-  return data.text
+export type StreamChatBody = {
+  model: string
+  messages: ChatApiMessage[]
+  modalities?: string[]
 }
 
 export async function streamChat(
   baseUrl: string,
-  messages: Array<{ role: string; content: string }>,
+  body: StreamChatBody,
 ): Promise<Response> {
   const response = await fetch(`${baseUrl}/api/chat/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify(body),
   })
 
   if (!response.ok) {
@@ -32,6 +29,36 @@ export async function streamChat(
   }
 
   return response
+}
+
+export async function synthesizeSpeech(
+  baseUrl: string,
+  options: {
+    input: string
+    model?: string
+    voice?: string
+    format?: string
+    signal?: AbortSignal
+  },
+): Promise<Blob> {
+  const response = await fetch(`${baseUrl}/api/speech`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      input: options.input,
+      model: options.model,
+      voice: options.voice,
+      format: options.format ?? 'mp3',
+    }),
+    signal: options.signal,
+  })
+
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`Speech failed (${response.status}): ${text}`)
+  }
+
+  return response.blob()
 }
 
 export async function* parseSSEStream(response: Response): AsyncGenerator<string> {

@@ -1,4 +1,5 @@
 using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json.Nodes;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -31,28 +32,55 @@ builder.Services.AddHttpClient("OpenAI", (sp, client) =>
 var app = builder.Build();
 app.UseCors();
 
-app.MapPost("/api/transcribe", async (IFormFile file, IHttpClientFactory httpFactory, IConfiguration config) =>
+app.MapPost("/api/speech", async (SpeechRequest req, IHttpClientFactory httpFactory, IConfiguration config) =>
 {
+    if (string.IsNullOrWhiteSpace(req.Input))
+        return Results.BadRequest("Missing input");
+
     var client = httpFactory.CreateClient("OpenAI");
-    var model = config["OpenAI:TranscriptionModel"] ?? "whisper-1";
+    var model = string.IsNullOrWhiteSpace(req.Model)
+        ? (config["OpenAI:TtsModel"] ?? "gpt-4o-mini-tts")
+        : req.Model!;
+    var voice = string.IsNullOrWhiteSpace(req.Voice)
+        ? (config["OpenAI:TtsVoice"] ?? "alloy")
+        : req.Voice!;
+    var responseFormat = string.IsNullOrWhiteSpace(req.Format) ? "mp3" : req.Format!;
 
-    using var content = new MultipartFormDataContent();
-    await using var fileStream = file.OpenReadStream();
-    var streamContent = new StreamContent(fileStream);
-    streamContent.Headers.ContentType = MediaTypeHeaderValue.Parse(file.ContentType ?? "audio/webm");
-    content.Add(streamContent, "file", file.FileName ?? "recording.webm");
-    content.Add(new StringContent(model), "model");
-    content.Add(new StringContent("en"), "language");
+    var payload = new JsonObject
+    {
+        ["model"] = model,
+        ["input"] = req.Input.Trim(),
+        ["voice"] = voice,
+        ["response_format"] = responseFormat
+    };
 
-    var response = await client.PostAsync("audio/transcriptions", content);
-    var body = await response.Content.ReadAsStringAsync();
+    var httpRequest = new HttpRequestMessage(HttpMethod.Post, "audio/speech")
+    {
+        Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
+    };
+
+    using var response = await client.SendAsync(httpRequest);
 
     if (!response.IsSuccessStatusCode)
-        return Results.Problem(detail: body, statusCode: StatusCodes.Status502BadGateway);
+    {
+        var err = await response.Content.ReadAsStringAsync();
+        return Results.Problem(detail: err, statusCode: StatusCodes.Status502BadGateway);
+    }
 
-    return Results.Content(body, "application/json");
-})
-.DisableAntiforgery();
+    var bytes = await response.Content.ReadAsByteArrayAsync();
+    var mime = responseFormat.ToLowerInvariant() switch
+    {
+        "mp3" => "audio/mpeg",
+        "opus" => "audio/opus",
+        "aac" => "audio/aac",
+        "flac" => "audio/flac",
+        "wav" => "audio/wav",
+        "pcm" => "audio/pcm",
+        _ => "application/octet-stream"
+    };
+
+    return Results.File(bytes, mime);
+});
 
 app.MapPost("/api/chat/stream", async (HttpContext ctx, IHttpClientFactory httpFactory, IConfiguration config) =>
 {

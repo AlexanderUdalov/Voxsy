@@ -6,9 +6,14 @@ const DEFAULT_SYSTEM_PROMPT = `You are a friendly English conversation partner a
 Rules:
 - Respond primarily in English.
 - When the user makes grammar or vocabulary mistakes, first respond to their message naturally. Then add a brief "Correction:" section with 1-2 fixes.
-- If a message is marked as [Transcribed from voice] and contains odd words or fragments, infer what the user likely meant and respond to that meaning.
+- When the user sends audio, listen to how they speak (pronunciation, rhythm, clarity). Comment on accent or clarity briefly when helpful.
 - Keep corrections encouraging and concise.
 - Adapt your vocabulary to the user's apparent level.`
+
+const LS_VOICE_CHAT_MODEL = 'voxsy_chatModel'
+const LS_TEXT_CHAT_MODEL = 'voxsy_textChatModel'
+const LS_TTS_MODEL = 'voxsy_ttsModel'
+const LS_TTS_VOICE = 'voxsy_ttsVoice'
 
 export const useSettingsStore = defineStore('settings', () => {
   const systemPrompt = ref(
@@ -19,13 +24,33 @@ export const useSettingsStore = defineStore('settings', () => {
     ?? import.meta.env.VITE_API_BASE_URL
     ?? 'http://localhost:5041',
   )
+  const chatModel = ref(
+    localStorage.getItem(LS_VOICE_CHAT_MODEL) ?? 'gpt-audio-mini',
+  )
+  const textChatModel = ref(
+    localStorage.getItem(LS_TEXT_CHAT_MODEL) ?? 'gpt-4o-mini',
+  )
+  const ttsModel = ref(localStorage.getItem(LS_TTS_MODEL) ?? 'gpt-4o-mini-tts')
+  const ttsVoice = ref(localStorage.getItem(LS_TTS_VOICE) ?? 'alloy')
 
   watch(systemPrompt, (v) => localStorage.setItem('voxsy_systemPrompt', v))
   watch(apiBaseUrl, (v) => localStorage.setItem('voxsy_apiBaseUrl', v))
+  watch(chatModel, (v) => localStorage.setItem(LS_VOICE_CHAT_MODEL, v))
+  watch(textChatModel, (v) => localStorage.setItem(LS_TEXT_CHAT_MODEL, v))
+  watch(ttsModel, (v) => localStorage.setItem(LS_TTS_MODEL, v))
+  watch(ttsVoice, (v) => localStorage.setItem(LS_TTS_VOICE, v))
 
   function resetPrompt() {
     systemPrompt.value = DEFAULT_SYSTEM_PROMPT
   }
 
-  return { systemPrompt, apiBaseUrl, resetPrompt }
+  return {
+    systemPrompt,
+    apiBaseUrl,
+    chatModel,
+    textChatModel,
+    ttsModel,
+    ttsVoice,
+    resetPrompt,
+  }
 })

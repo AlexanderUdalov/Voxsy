@@ -1,89 +1,138 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, onUnmounted } from 'vue'
 import type { ChatMessage } from '../types'
+import { useSettingsStore } from '../stores/settings'
+import { synthesizeSpeech } from '../services/api'
+import VoiceSchematicPlayer from './VoiceSchematicPlayer.vue'
 
 const props = defineProps<{ message: ChatMessage }>()
+const settings = useSettingsStore()
 
 const isSpeaking = ref(false)
-
-function speak() {
-  speechSynthesis.cancel()
-  const utterance = new SpeechSynthesisUtterance(props.message.content)
-  utterance.lang = 'en-US'
-  utterance.rate = 0.9
-  utterance.onend = () => {
-    isSpeaking.value = false
-  }
-  utterance.onerror = () => {
-    isSpeaking.value = false
-  }
-  isSpeaking.value = true
-  speechSynthesis.speak(utterance)
-}
-
-function stopSpeaking() {
-  speechSynthesis.cancel()
-  isSpeaking.value = false
-}
-
-const isPlaying = ref(false)
+const speakAbort = ref<AbortController | null>(null)
+let ttsObjectUrl: string | null = null
 let currentAudio: HTMLAudioElement | null = null
 
-function playRecording() {
-  if (!props.message.audioUrl) return
+function stripForTts(text: string): string {
+  const max = 3900
+  const t = text.trim()
+  if (t.length <= max) return t
+  return `${t.slice(0, max)}…`
+}
 
+function revokeTtsUrl() {
+  if (ttsObjectUrl) {
+    URL.revokeObjectURL(ttsObjectUrl)
+    ttsObjectUrl = null
+  }
+}
+
+function cleanupSpeaking() {
+  isSpeaking.value = false
+  speakAbort.value = null
   if (currentAudio) {
     currentAudio.pause()
     currentAudio = null
-    isPlaying.value = false
+  }
+  revokeTtsUrl()
+}
+
+function stopSpeaking() {
+  speakAbort.value?.abort()
+  cleanupSpeaking()
+}
+
+async function speak() {
+  if (isSpeaking.value) {
+    stopSpeaking()
     return
   }
+  const raw = props.message.content.trim()
+  if (!raw) return
 
-  currentAudio = new Audio(props.message.audioUrl)
-  currentAudio.onended = () => {
-    isPlaying.value = false
-    currentAudio = null
+  const ac = new AbortController()
+  speakAbort.value = ac
+  isSpeaking.value = true
+
+  try {
+    const blob = await synthesizeSpeech(settings.apiBaseUrl, {
+      input: stripForTts(raw),
+      model: settings.ttsModel,
+      voice: settings.ttsVoice,
+      format: 'mp3',
+      signal: ac.signal,
+    })
+    if (ac.signal.aborted) {
+      cleanupSpeaking()
+      return
+    }
+    revokeTtsUrl()
+    ttsObjectUrl = URL.createObjectURL(blob)
+    if (ac.signal.aborted) {
+      cleanupSpeaking()
+      return
+    }
+    const audio = new Audio(ttsObjectUrl)
+    currentAudio = audio
+    audio.onended = () => cleanupSpeaking()
+    audio.onerror = () => cleanupSpeaking()
+    await audio.play()
+  } catch (e) {
+    const name = e instanceof DOMException ? e.name : (e as Error)?.name
+    if (name === 'AbortError') {
+      cleanupSpeaking()
+      return
+    }
+    console.error(e)
+    cleanupSpeaking()
   }
-  currentAudio.onerror = () => {
-    isPlaying.value = false
-    currentAudio = null
-  }
-  isPlaying.value = true
-  currentAudio.play()
 }
+
+onUnmounted(() => {
+  stopSpeaking()
+})
+
+const isUserVoiceBubble = () =>
+  props.message.role === 'user'
+  && props.message.source === 'voice'
+  && !!props.message.audioUrl
 </script>
 
 <template>
   <div :class="['bubble', `bubble--${message.role}`]">
-    <div class="bubble-content">
-      <span v-if="message.source === 'voice'" class="bubble-source">🎤</span>
-      <span v-if="message.content" class="bubble-text">{{
-        message.content
-      }}</span>
-      <span
-        v-if="!message.content && message.role === 'assistant'"
-        class="bubble-loading"
-      >
-        <span class="dot" /><span class="dot" /><span class="dot" />
-      </span>
+    <div
+      class="bubble-content"
+      :class="{ 'bubble-content--voice-user': isUserVoiceBubble() }"
+    >
+      <template v-if="isUserVoiceBubble()">
+        <VoiceSchematicPlayer
+          :src="message.audioUrl!"
+          variant="bubble-user"
+        />
+      </template>
+      <template v-else>
+        <span v-if="message.content" class="bubble-text">{{
+          message.content
+        }}</span>
+        <span
+          v-if="!message.content && message.role === 'assistant'"
+          class="bubble-loading"
+        >
+          <span class="dot" /><span class="dot" /><span class="dot" />
+        </span>
+      </template>
     </div>
 
-    <div v-if="message.content" class="bubble-actions">
+    <div
+      v-if="message.role === 'assistant' && message.content"
+      class="bubble-actions"
+    >
       <button
-        v-if="message.role === 'assistant'"
         class="bubble-action-btn"
-        @click="isSpeaking ? stopSpeaking() : speak()"
-        :title="isSpeaking ? 'Stop' : 'Listen'"
+        @click="speak()"
+        :title="isSpeaking ? 'Stop' : 'Listen (OpenAI TTS)'"
       >
         {{ isSpeaking ? '⏹' : '🔊' }}
-      </button>
-      <button
-        v-if="message.audioUrl"
-        class="bubble-action-btn"
-        @click="playRecording"
-        :title="isPlaying ? 'Stop playback' : 'Replay recording'"
-      >
-        {{ isPlaying ? '⏹' : '▶️' }}
       </button>
     </div>
   </div>
@@ -114,6 +163,12 @@ function playRecording() {
   word-break: break-word;
 }
 
+.bubble-content--voice-user {
+  min-width: min(100%, 260px);
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
 .bubble--user .bubble-content {
   background: var(--accent);
   color: var(--text-inverse);
@@ -125,11 +180,6 @@ function playRecording() {
   color: var(--text);
   border-bottom-left-radius: 4px;
   box-shadow: var(--shadow);
-}
-
-.bubble-source {
-  margin-right: 4px;
-  font-size: 13px;
 }
 
 .bubble-actions {

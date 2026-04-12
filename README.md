@@ -7,7 +7,7 @@ Chat with an AI tutor via text or voice — it responds naturally, gently correc
 ## Architecture
 
 - **Frontend:** Vue 3 + TypeScript + Vite + Pinia + CSS
-- **Backend:** ASP.NET Core (.NET 10) — thin BFF that proxies OpenAI Chat Completions (streaming) and Whisper transcription
+- **Backend:** ASP.NET Core (.NET 10) — thin BFF that proxies OpenAI Chat Completions (streaming) and speech synthesis
 
 ## Prerequisites
 
@@ -50,8 +50,9 @@ Opens at `http://localhost:5173`.
 |-----|---------|-------------|
 | `OpenAI:ApiKey` | — | OpenAI API key (use User Secrets or env var `OpenAI__ApiKey`) |
 | `OpenAI:BaseUrl` | `https://api.openai.com/v1/` | API base URL (compatible providers work too) |
-| `OpenAI:ChatModel` | `gpt-4o-mini` | Model for chat completions |
-| `OpenAI:TranscriptionModel` | `whisper-1` | Model for speech-to-text |
+| `OpenAI:ChatModel` | `gpt-4o-mini` | Default chat model if the client omits `model` |
+| `OpenAI:TtsModel` | `gpt-4o-mini-tts` | Default TTS model for `/api/speech` |
+| `OpenAI:TtsVoice` | `alloy` | Default voice for `/api/speech` |
 | `Cors:Origins` | `["http://localhost:5173"]` | Allowed CORS origins |
 
 ### Frontend (`.env`)
@@ -77,14 +78,10 @@ Proxies chat completions with streaming. Request body:
 }
 ```
 
-Response: SSE stream in OpenAI format (`text/event-stream`). The `model` and `stream: true` fields are injected by the backend.
+Response: SSE stream in OpenAI format (`text/event-stream`). The `model` and `stream: true` fields are injected by the backend when missing.
 
-### `POST /api/transcribe`
+### `POST /api/speech`
 
-Transcribes audio via Whisper. Request: `multipart/form-data` with a `file` field (webm, mp3, wav, etc.).
+Proxies OpenAI `audio/speech` for assistant TTS. JSON body: `input` (required), optional `model`, `voice`, `format` (e.g. `mp3`). Returns raw audio bytes.
 
-Response:
-
-```json
-{ "text": "transcribed text" }
-```
+Voice messages in the app are sent as `input_audio` in chat completions (no separate transcription API).

@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, onUnmounted } from 'vue'
+import { ref, watch, nextTick, onUnmounted, computed } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { useSettingsStore } from '../stores/settings'
-import { transcribeAudio } from '../services/api'
+import { usesNativeAudioInput } from '../lib/models'
 import MessageBubble from './MessageBubble.vue'
+import VoiceSchematicPlayer from './VoiceSchematicPlayer.vue'
 
 const chatStore = useChatStore()
 const settingsStore = useSettingsStore()
@@ -12,8 +13,12 @@ const messagesEl = ref<HTMLElement>()
 const inputEl = ref<HTMLTextAreaElement>()
 const inputText = ref('')
 const isRecording = ref(false)
-const isTranscribing = ref(false)
 const pendingAudioUrl = ref<string | undefined>()
+const pendingVoiceBlob = ref<Blob | undefined>()
+
+const voiceInputOk = computed(() => usesNativeAudioInput(settingsStore.chatModel))
+
+const micBlockedByText = computed(() => inputText.value.trim().length > 0)
 
 let mediaRecorder: MediaRecorder | null = null
 let audioChunks: Blob[] = []
@@ -33,6 +38,12 @@ watch(
   { flush: 'post' },
 )
 
+watch(
+  () => chatStore.messages.length,
+  scrollToBottom,
+  { flush: 'post' },
+)
+
 function autoResize() {
   const el = inputEl.value
   if (!el) return
@@ -42,17 +53,27 @@ function autoResize() {
 
 watch(inputText, () => nextTick(autoResize))
 
+function discardVoiceDraft() {
+  if (pendingAudioUrl.value) URL.revokeObjectURL(pendingAudioUrl.value)
+  pendingAudioUrl.value = undefined
+  pendingVoiceBlob.value = undefined
+}
+
 async function send() {
   const text = inputText.value.trim()
-  if (!text || chatStore.isStreaming) return
+  const hasVoice = !!pendingVoiceBlob.value
+  if ((!text && !hasVoice) || chatStore.isStreaming) return
+  if (hasVoice && !voiceInputOk.value) return
 
-  const source = pendingAudioUrl.value ? ('voice' as const) : ('text' as const)
+  const source = hasVoice ? ('voice' as const) : ('text' as const)
   const audioUrl = pendingAudioUrl.value
+  const voiceBlob = pendingVoiceBlob.value
 
   inputText.value = ''
   pendingAudioUrl.value = undefined
+  pendingVoiceBlob.value = undefined
 
-  await chatStore.sendMessage(text, source, audioUrl)
+  await chatStore.sendMessage(hasVoice ? '' : text, source, audioUrl, voiceBlob)
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -91,11 +112,13 @@ async function toggleRecording() {
       if (e.data.size > 0) audioChunks.push(e.data)
     }
 
-    recorder.onstop = async () => {
+    recorder.onstop = () => {
       stream.getTracks().forEach((t) => t.stop())
       isRecording.value = false
       const blob = new Blob(audioChunks, { type: recorder.mimeType })
-      await handleTranscription(blob)
+      if (pendingAudioUrl.value) URL.revokeObjectURL(pendingAudioUrl.value)
+      pendingVoiceBlob.value = blob
+      pendingAudioUrl.value = URL.createObjectURL(blob)
     }
 
     recorder.start()
@@ -106,19 +129,23 @@ async function toggleRecording() {
   }
 }
 
-async function handleTranscription(blob: Blob) {
-  isTranscribing.value = true
-  try {
-    const text = await transcribeAudio(settingsStore.apiBaseUrl, blob)
-    inputText.value = text
-    pendingAudioUrl.value = URL.createObjectURL(blob)
-    nextTick(() => inputEl.value?.focus())
-  } catch (err) {
-    console.error('Transcription error:', err)
-  } finally {
-    isTranscribing.value = false
-  }
-}
+const micDisabled = computed(
+  () =>
+    chatStore.isStreaming
+    || !voiceInputOk.value
+    || !!pendingVoiceBlob.value
+    || micBlockedByText.value,
+)
+
+const micTitle = computed(() => {
+  if (pendingVoiceBlob.value)
+    return 'Remove the voice draft to record again'
+  if (micBlockedByText.value) return 'Clear the text field to record voice'
+  if (!voiceInputOk.value)
+    return 'Pick an audio-capable chat model in Settings'
+  if (isRecording.value) return 'Stop recording'
+  return 'Record voice'
+})
 
 onUnmounted(() => {
   if (pendingAudioUrl.value) URL.revokeObjectURL(pendingAudioUrl.value)
@@ -132,7 +159,10 @@ onUnmounted(() => {
       <div v-if="chatStore.messages.length === 0" class="empty-state">
         <div class="empty-icon">💬</div>
         <h2>Welcome to Voxsy</h2>
-        <p>Type a message or record your voice to start practicing English.</p>
+        <p>
+          Type a message or record voice (requires an audio chat model in
+          Settings). Text and voice cannot be mixed in one message.
+        </p>
       </div>
       <MessageBubble
         v-for="msg in chatStore.messages"
@@ -143,14 +173,28 @@ onUnmounted(() => {
 
     <div class="input-area">
       <div class="input-row">
+        <div v-if="pendingVoiceBlob && pendingAudioUrl" class="voice-draft">
+          <div class="voice-draft-row">
+            <VoiceSchematicPlayer
+              :src="pendingAudioUrl"
+              variant="composer"
+            />
+            <button
+              type="button"
+              class="voice-draft-remove"
+              @click="discardVoiceDraft"
+              title="Remove recording"
+            >
+              ×
+            </button>
+          </div>
+        </div>
         <textarea
+          v-else
           ref="inputEl"
           v-model="inputText"
           @keydown="handleKeydown"
-          :placeholder="
-            isTranscribing ? 'Transcribing...' : 'Type a message...'
-          "
-          :disabled="isTranscribing"
+          placeholder="Type a message…"
           rows="1"
           class="text-input"
         />
@@ -159,8 +203,8 @@ onUnmounted(() => {
           class="action-btn mic-btn"
           :class="{ recording: isRecording }"
           @click="toggleRecording"
-          :disabled="chatStore.isStreaming || isTranscribing"
-          :title="isRecording ? 'Stop recording' : 'Record voice'"
+          :disabled="micDisabled"
+          :title="micTitle"
         >
           <svg
             v-if="!isRecording"
@@ -191,7 +235,11 @@ onUnmounted(() => {
         <button
           class="action-btn send-btn"
           @click="send"
-          :disabled="!inputText.trim() || chatStore.isStreaming || isTranscribing"
+          :disabled="
+            (!inputText.trim() && !pendingVoiceBlob) ||
+            chatStore.isStreaming ||
+            (pendingVoiceBlob && !voiceInputOk)
+          "
           title="Send"
         >
           <svg
@@ -294,6 +342,44 @@ onUnmounted(() => {
 
 .text-input:disabled {
   opacity: 0.6;
+}
+
+.voice-draft {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.voice-draft-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+}
+
+.voice-draft-remove {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  font-size: 22px;
+  line-height: 1;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--transition), color var(--transition);
+}
+
+.voice-draft-remove:hover {
+  background: var(--surface-alt);
+  color: var(--danger);
 }
 
 .action-btn {
