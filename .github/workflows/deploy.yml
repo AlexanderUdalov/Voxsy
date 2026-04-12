@@ -10,6 +10,12 @@
 #
 # On the VPS: create a systemd unit named voxsy-backend (or change the last step) that runs the published DLL
 # from /var/www/voxsy/backend/ (e.g. ExecStart=/usr/bin/dotnet /var/www/voxsy/backend/Voxsy.dll).
+#
+# Passwordless sudo for GitHub SSH (non-interactive — no TTY for sudo password):
+#   sudo visudo -f /etc/sudoers.d/voxsy-deploy
+# Paste (replace "deploy" if VPS_USER is different; use `command -v systemctl` for the path):
+#   deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart voxsy-backend, /usr/bin/systemctl status voxsy-backend
+#   chmod 440 /etc/sudoers.d/voxsy-deploy
 
 name: Deploy
 
@@ -94,4 +100,4 @@ jobs:
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_KEY }}
           script: |
-            sudo systemctl restart voxsy-backend
+            sudo -n /usr/bin/systemctl restart voxsy-backend
