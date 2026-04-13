@@ -137,6 +137,7 @@ export const useChatStore = defineStore('chat', () => {
     })
 
     const assistantIdx = messages.value.length - 1
+    const userIdx = assistantIdx - 1
     isStreaming.value = true
 
     try {
@@ -152,13 +153,14 @@ export const useChatStore = defineStore('chat', () => {
         }
 
         try {
-          userMessage.content = await transcribeSpeech(settings.apiBaseUrl, {
+          const transcript = await transcribeSpeech(settings.apiBaseUrl, {
             audio: voiceBlob,
             filename: 'voice-message.webm',
           })
+          messages.value[userIdx].content = transcript
         } catch (e) {
           console.error('Could not transcribe voice:', e)
-          userMessage.content = ''
+          messages.value[userIdx].content = ''
         }
 
         try {
