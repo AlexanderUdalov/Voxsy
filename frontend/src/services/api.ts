@@ -61,6 +61,36 @@ export async function synthesizeSpeech(
   return response.blob()
 }
 
+export async function synthesizeSpeechStream(
+  baseUrl: string,
+  options: {
+    input: string
+    model?: string
+    voice?: string
+    format?: string
+    signal?: AbortSignal
+  },
+): Promise<Response> {
+  const response = await fetch(`${baseUrl}/api/speech`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      input: options.input,
+      model: options.model,
+      voice: options.voice,
+      format: options.format ?? 'mp3',
+    }),
+    signal: options.signal,
+  })
+
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`Speech failed (${response.status}): ${text}`)
+  }
+
+  return response
+}
+
 export async function* parseSSEStream(response: Response): AsyncGenerator<string> {
   const reader = response.body!.getReader()
   const decoder = new TextDecoder()

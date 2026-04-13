@@ -32,7 +32,7 @@ builder.Services.AddHttpClient("OpenAI", (sp, client) =>
 var app = builder.Build();
 app.UseCors();
 
-app.MapPost("/api/speech", async (SpeechRequest req, IHttpClientFactory httpFactory, IConfiguration config) =>
+app.MapPost("/api/speech", async (SpeechRequest req, IHttpClientFactory httpFactory, IConfiguration config, HttpContext ctx) =>
 {
     if (string.IsNullOrWhiteSpace(req.Input))
         return Results.BadRequest("Missing input");
@@ -59,7 +59,11 @@ app.MapPost("/api/speech", async (SpeechRequest req, IHttpClientFactory httpFact
         Content = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json")
     };
 
-    using var response = await client.SendAsync(httpRequest);
+    using var response = await client.SendAsync(
+        httpRequest,
+        HttpCompletionOption.ResponseHeadersRead,
+        ctx.RequestAborted
+    );
 
     if (!response.IsSuccessStatusCode)
     {
@@ -67,7 +71,6 @@ app.MapPost("/api/speech", async (SpeechRequest req, IHttpClientFactory httpFact
         return Results.Problem(detail: err, statusCode: StatusCodes.Status502BadGateway);
     }
 
-    var bytes = await response.Content.ReadAsByteArrayAsync();
     var mime = responseFormat.ToLowerInvariant() switch
     {
         "mp3" => "audio/mpeg",
@@ -79,7 +82,15 @@ app.MapPost("/api/speech", async (SpeechRequest req, IHttpClientFactory httpFact
         _ => "application/octet-stream"
     };
 
-    return Results.File(bytes, mime);
+    ctx.Response.StatusCode = StatusCodes.Status200OK;
+    ctx.Response.ContentType = mime;
+    ctx.Response.Headers.CacheControl = "no-cache";
+
+    await using var upstream = await response.Content.ReadAsStreamAsync(ctx.RequestAborted);
+    await upstream.CopyToAsync(ctx.Response.Body, ctx.RequestAborted);
+    await ctx.Response.Body.FlushAsync(ctx.RequestAborted);
+
+    return Results.Empty;
 });
 
 app.MapPost("/api/chat/stream", async (HttpContext ctx, IHttpClientFactory httpFactory, IConfiguration config) =>

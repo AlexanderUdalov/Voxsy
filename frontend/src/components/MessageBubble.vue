@@ -3,17 +3,112 @@ import { ref, onUnmounted, watch } from 'vue'
 import type { ChatMessage } from '../types'
 import { useChatStore } from '../stores/chat'
 import { useSettingsStore } from '../stores/settings'
-import { synthesizeSpeech } from '../services/api'
+import { synthesizeSpeechStream } from '../services/api'
 import VoiceSchematicPlayer from './VoiceSchematicPlayer.vue'
 
 const props = defineProps<{ message: ChatMessage }>()
 const chatStore = useChatStore()
 const settings = useSettingsStore()
 
-const isSpeaking = ref(false)
+type TtsState = 'idle' | 'loading' | 'playing'
+const ttsState = ref<TtsState>('idle')
 const speakAbort = ref<AbortController | null>(null)
 let ttsObjectUrl: string | null = null
 let currentAudio: HTMLAudioElement | null = null
+
+function canStreamMp3WithMediaSource(): boolean {
+  return (
+    typeof window !== 'undefined'
+    && 'MediaSource' in window
+    && MediaSource.isTypeSupported('audio/mpeg')
+  )
+}
+
+function wireAudioLifecycle(audio: HTMLAudioElement) {
+  audio.onended = () => cleanupSpeaking()
+  audio.onerror = () => cleanupSpeaking()
+  audio.onplaying = () => {
+    ttsState.value = 'playing'
+  }
+}
+
+function createAbortError(): Error {
+  return new DOMException('The operation was aborted.', 'AbortError')
+}
+
+async function streamToMediaSource(
+  response: Response,
+  audio: HTMLAudioElement,
+  signal: AbortSignal,
+) {
+  if (!response.body) throw new Error('Speech stream is unavailable')
+
+  const mediaSource = new MediaSource()
+  revokeTtsUrl()
+  ttsObjectUrl = URL.createObjectURL(mediaSource)
+  audio.src = ttsObjectUrl
+
+  let sourceBuffer: SourceBuffer | null = null
+  const queue: ArrayBuffer[] = []
+  let streamEnded = false
+
+  const appendNext = () => {
+    if (!sourceBuffer || sourceBuffer.updating || queue.length === 0) return
+    sourceBuffer.appendBuffer(queue.shift()!)
+  }
+
+  const maybeCloseMediaSource = () => {
+    if (!sourceBuffer || sourceBuffer.updating || queue.length > 0) return
+    if (streamEnded && mediaSource.readyState === 'open') {
+      try {
+        mediaSource.endOfStream()
+      } catch {
+        // ignore endOfStream races
+      }
+    }
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const onAbort = () => reject(createAbortError())
+    if (signal.aborted) {
+      reject(createAbortError())
+      return
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    mediaSource.addEventListener(
+      'sourceopen',
+      () => {
+        signal.removeEventListener('abort', onAbort)
+        sourceBuffer = mediaSource.addSourceBuffer('audio/mpeg')
+        sourceBuffer.mode = 'sequence'
+        sourceBuffer.addEventListener('updateend', () => {
+          appendNext()
+          maybeCloseMediaSource()
+        })
+        resolve()
+      },
+      { once: true },
+    )
+  })
+
+  const reader = response.body.getReader()
+  try {
+    while (true) {
+      if (signal.aborted) throw createAbortError()
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value || value.byteLength === 0) continue
+      const chunk = new Uint8Array(value.byteLength)
+      chunk.set(value)
+      queue.push(chunk.buffer)
+      appendNext()
+    }
+    streamEnded = true
+    maybeCloseMediaSource()
+  } finally {
+    reader.releaseLock()
+  }
+}
 
 function stripForTts(text: string): string {
   const max = 3900
@@ -30,7 +125,7 @@ function revokeTtsUrl() {
 }
 
 function cleanupSpeaking() {
-  isSpeaking.value = false
+  ttsState.value = 'idle'
   speakAbort.value = null
   if (currentAudio) {
     currentAudio.pause()
@@ -52,10 +147,10 @@ async function playTts() {
 
   const ac = new AbortController()
   speakAbort.value = ac
-  isSpeaking.value = true
+  ttsState.value = 'loading'
 
   try {
-    const blob = await synthesizeSpeech(settings.apiBaseUrl, {
+    const response = await synthesizeSpeechStream(settings.apiBaseUrl, {
       input: stripForTts(raw),
       model: settings.ttsModel,
       voice: settings.ttsVoice,
@@ -66,16 +161,31 @@ async function playTts() {
       cleanupSpeaking()
       return
     }
+    const audio = new Audio()
+    currentAudio = audio
+    wireAudioLifecycle(audio)
+
+    if (canStreamMp3WithMediaSource()) {
+      const pumping = streamToMediaSource(response, audio, ac.signal)
+      await audio.play()
+      void pumping.catch((e) => {
+        const name = e instanceof DOMException ? e.name : (e as Error)?.name
+        if (name === 'AbortError') return
+        console.error(e)
+        cleanupSpeaking()
+      })
+      return
+    }
+
+    // Fallback for browsers that cannot append MPEG chunks via MediaSource.
+    const blob = await response.blob()
     revokeTtsUrl()
     ttsObjectUrl = URL.createObjectURL(blob)
+    audio.src = ttsObjectUrl
     if (ac.signal.aborted) {
       cleanupSpeaking()
       return
     }
-    const audio = new Audio(ttsObjectUrl)
-    currentAudio = audio
-    audio.onended = () => cleanupSpeaking()
-    audio.onerror = () => cleanupSpeaking()
     await audio.play()
   } catch (e) {
     const name = e instanceof DOMException ? e.name : (e as Error)?.name
@@ -89,7 +199,7 @@ async function playTts() {
 }
 
 async function speak() {
-  if (isSpeaking.value) {
+  if (ttsState.value !== 'idle') {
     stopSpeaking()
     return
   }
@@ -151,9 +261,21 @@ const isUserVoiceBubble = () =>
       <button
         class="bubble-action-btn"
         @click="speak()"
-        :title="isSpeaking ? 'Stop' : 'Listen (OpenAI TTS)'"
+        :title="
+          ttsState === 'playing'
+            ? 'Stop'
+            : ttsState === 'loading'
+              ? 'Buffering audio... click to stop'
+              : 'Listen (OpenAI TTS)'
+        "
       >
-        {{ isSpeaking ? '⏹' : '🔊' }}
+        {{
+          ttsState === 'playing'
+            ? '⏹'
+            : ttsState === 'loading'
+              ? '⏳'
+              : '🔊'
+        }}
       </button>
     </div>
   </div>
