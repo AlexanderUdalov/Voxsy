@@ -15,6 +15,7 @@ const inputText = ref('')
 const isRecording = ref(false)
 const pendingAudioUrl = ref<string | undefined>()
 const pendingVoiceBlob = ref<Blob | undefined>()
+const recordingNotice = ref('')
 
 const voiceInputOk = computed(() => usesNativeAudioInput(settingsStore.chatModel))
 
@@ -22,6 +23,13 @@ const micBlockedByText = computed(() => inputText.value.trim().length > 0)
 
 let mediaRecorder: MediaRecorder | null = null
 let audioChunks: Blob[] = []
+let maxDurationTimeout: number | null = null
+
+const MAX_REQUEST_BYTES = 10 * 1024 * 1024 // 10 MB
+const WAV_BASE64_BYTES_PER_SECOND_AT_48K = 48_000 * 2 * (4 / 3)
+const MAX_VOICE_SECONDS = Math.floor(
+  MAX_REQUEST_BYTES / WAV_BASE64_BYTES_PER_SECOND_AT_48K,
+)
 
 function scrollToBottom() {
   if (messagesEl.value) {
@@ -57,6 +65,18 @@ function discardVoiceDraft() {
   if (pendingAudioUrl.value) URL.revokeObjectURL(pendingAudioUrl.value)
   pendingAudioUrl.value = undefined
   pendingVoiceBlob.value = undefined
+  recordingNotice.value = ''
+}
+
+function clearRecordingTimer() {
+  if (maxDurationTimeout !== null) {
+    window.clearTimeout(maxDurationTimeout)
+    maxDurationTimeout = null
+  }
+}
+
+function stopRecording() {
+  mediaRecorder?.stop()
 }
 
 async function send() {
@@ -95,7 +115,7 @@ function getSupportedMimeType(): string {
 
 async function toggleRecording() {
   if (isRecording.value) {
-    mediaRecorder?.stop()
+    stopRecording()
     return
   }
 
@@ -113,17 +133,26 @@ async function toggleRecording() {
     }
 
     recorder.onstop = () => {
+      clearRecordingTimer()
       stream.getTracks().forEach((t) => t.stop())
       isRecording.value = false
       const blob = new Blob(audioChunks, { type: recorder.mimeType })
       if (pendingAudioUrl.value) URL.revokeObjectURL(pendingAudioUrl.value)
       pendingVoiceBlob.value = blob
       pendingAudioUrl.value = URL.createObjectURL(blob)
+      mediaRecorder = null
     }
 
     recorder.start()
     mediaRecorder = recorder
     isRecording.value = true
+    recordingNotice.value = ''
+    maxDurationTimeout = window.setTimeout(() => {
+      if (!isRecording.value) return
+      recordingNotice.value =
+        `Recording was stopped at ${MAX_VOICE_SECONDS}s to fit the 10 MB request limit.`
+      stopRecording()
+    }, MAX_VOICE_SECONDS * 1000)
   } catch (err) {
     console.error('Microphone access denied:', err)
   }
@@ -148,8 +177,9 @@ const micTitle = computed(() => {
 })
 
 onUnmounted(() => {
+  clearRecordingTimer()
   if (pendingAudioUrl.value) URL.revokeObjectURL(pendingAudioUrl.value)
-  mediaRecorder?.stop()
+  stopRecording()
 })
 </script>
 
@@ -257,6 +287,7 @@ onUnmounted(() => {
           </svg>
         </button>
       </div>
+      <p v-if="recordingNotice" class="voice-limit-note">{{ recordingNotice }}</p>
     </div>
   </main>
 </template>
@@ -319,6 +350,13 @@ onUnmounted(() => {
   gap: 8px;
   max-width: 800px;
   margin: 0 auto;
+}
+
+.voice-limit-note {
+  max-width: 800px;
+  margin: 8px auto 0;
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 
 .text-input {
