@@ -5,6 +5,7 @@ import { useSettingsStore } from './settings'
 import {
   streamChat,
   parseSSEStream,
+  transcribeSpeech,
   type ChatApiMessage,
   type ChatContentPart,
 } from '../services/api'
@@ -120,13 +121,14 @@ export const useChatStore = defineStore('chat', () => {
     audioUrl?: string,
     voiceBlob?: Blob | null,
   ) {
-    messages.value.push({
+    const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
-      content,
+      content: source === 'voice' ? '' : content,
       source,
       audioUrl,
-    })
+    }
+    messages.value.push(userMessage)
 
     messages.value.push({
       id: crypto.randomUUID(),
@@ -148,6 +150,17 @@ export const useChatStore = defineStore('chat', () => {
             'Error: Voice requires an audio-capable chat model and a recording.'
           return
         }
+
+        try {
+          userMessage.content = await transcribeSpeech(settings.apiBaseUrl, {
+            audio: voiceBlob,
+            filename: 'voice-message.webm',
+          })
+        } catch (e) {
+          console.error('Could not transcribe voice:', e)
+          userMessage.content = ''
+        }
+
         try {
           voiceWavBase64 = await blobToWavBase64(voiceBlob)
         } catch (e) {

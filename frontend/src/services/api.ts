@@ -91,6 +91,32 @@ export async function synthesizeSpeechStream(
   return response
 }
 
+export async function transcribeSpeech(
+  baseUrl: string,
+  options: {
+    audio: Blob
+    filename?: string
+    model?: string
+  },
+): Promise<string> {
+  const form = new FormData()
+  form.append('audio', options.audio, options.filename ?? 'voice-message.webm')
+  if (options.model) form.append('model', options.model)
+
+  const response = await fetch(`${baseUrl}/api/transcribe`, {
+    method: 'POST',
+    body: form,
+  })
+
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`Transcription failed (${response.status}): ${text}`)
+  }
+
+  const payload = (await response.json()) as { text?: string }
+  return (payload.text ?? '').trim()
+}
+
 export async function* parseSSEStream(response: Response): AsyncGenerator<string> {
   const reader = response.body!.getReader()
   const decoder = new TextDecoder()

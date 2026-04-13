@@ -1,5 +1,6 @@
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -91,6 +92,51 @@ app.MapPost("/api/speech", async (SpeechRequest req, IHttpClientFactory httpFact
     await ctx.Response.Body.FlushAsync(ctx.RequestAborted);
 
     return Results.Empty;
+});
+
+app.MapPost("/api/transcribe", async (HttpRequest request, IHttpClientFactory httpFactory, IConfiguration config, CancellationToken ct) =>
+{
+    if (!request.HasFormContentType)
+        return Results.BadRequest("Expected multipart/form-data");
+
+    var form = await request.ReadFormAsync(ct);
+    var audio = form.Files.GetFile("audio");
+    if (audio is null || audio.Length == 0)
+        return Results.BadRequest("Missing audio file");
+
+    var model = form["model"].ToString();
+    if (string.IsNullOrWhiteSpace(model))
+        model = config["OpenAI:TranscriptionModel"] ?? "gpt-4o-mini-transcribe";
+
+    await using var sourceStream = audio.OpenReadStream();
+    using var content = new MultipartFormDataContent();
+    content.Add(new StringContent(model), "model");
+    content.Add(
+        new StringContent("Keep pauses, fillers, hesitations, and non-lexical sounds (like 'uh', 'umm', 'mmm') when they are audible."),
+        "prompt"
+    );
+    content.Add(new StringContent("json"), "response_format");
+
+    var fileContent = new StreamContent(sourceStream);
+    fileContent.Headers.ContentType = MediaTypeHeaderValue.Parse(audio.ContentType ?? "application/octet-stream");
+    content.Add(fileContent, "file", string.IsNullOrWhiteSpace(audio.FileName) ? "voice-message.webm" : audio.FileName);
+
+    var client = httpFactory.CreateClient("OpenAI");
+    using var upstreamResponse = await client.PostAsync("audio/transcriptions", content, ct);
+
+    if (!upstreamResponse.IsSuccessStatusCode)
+    {
+        var err = await upstreamResponse.Content.ReadAsStringAsync(ct);
+        return Results.Problem(detail: err, statusCode: StatusCodes.Status502BadGateway);
+    }
+
+    await using var payloadStream = await upstreamResponse.Content.ReadAsStreamAsync(ct);
+    using var doc = await JsonDocument.ParseAsync(payloadStream, cancellationToken: ct);
+    var text = doc.RootElement.TryGetProperty("text", out var textNode)
+        ? textNode.GetString() ?? string.Empty
+        : string.Empty;
+
+    return Results.Json(new { text });
 });
 
 app.MapPost("/api/chat/stream", async (HttpContext ctx, IHttpClientFactory httpFactory, IConfiguration config) =>

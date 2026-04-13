@@ -240,6 +240,9 @@ const isUserVoiceBubble = () =>
           :src="message.audioUrl!"
           variant="bubble-user"
         />
+        <p v-if="message.content" class="voice-transcript">
+          {{ message.content }}
+        </p>
       </template>
       <template v-else>
         <span v-if="message.content" class="bubble-text">{{
@@ -310,6 +313,9 @@ const isUserVoiceBubble = () =>
   min-width: min(100%, 260px);
   padding-top: 8px;
   padding-bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .bubble--user .bubble-content {
@@ -323,6 +329,16 @@ const isUserVoiceBubble = () =>
   color: var(--text);
   border-bottom-left-radius: 4px;
   box-shadow: var(--shadow);
+}
+
+.voice-transcript {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.35;
+  color: color-mix(in srgb, var(--text-inverse) 65%, transparent);
+  font-style: italic;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .bubble-actions {
