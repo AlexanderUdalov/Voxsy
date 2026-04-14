@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick, onUnmounted, computed } from 'vue'
+import { ref, watch, nextTick, onMounted, onUnmounted, computed } from 'vue'
 import { useChatStore } from '../stores/chat'
 import { useSettingsStore } from '../stores/settings'
 import { usesNativeAudioInput } from '../lib/models'
@@ -51,6 +51,11 @@ watch(
   scrollToBottom,
   { flush: 'post' },
 )
+
+onMounted(() => {
+  // Ensure persisted history opens at the latest message on first paint.
+  nextTick(scrollToBottom)
+})
 
 function autoResize() {
   const el = inputEl.value
