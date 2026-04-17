@@ -3,48 +3,17 @@ import { defineStore } from 'pinia'
 import type { ChatMessage } from '../types'
 import { useSettingsStore } from './settings'
 import {
-  streamChat,
+  startSession,
+  streamSessionFeedback,
+  streamSessionMessage,
   parseSSEStream,
   transcribeSpeech,
-  type ChatApiMessage,
-  type ChatContentPart,
 } from '../services/api'
 import { usesNativeAudioInput } from '../lib/models'
 import { blobToWavBase64 } from '../utils/audio'
 
-function toApiMessage(
-  m: ChatMessage,
-  isLatestUserVoice: boolean,
-  wavBase64: string | undefined,
-  chatModel: string,
-): ChatApiMessage {
-  if (
-    m.role === 'user'
-    && m.source === 'voice'
-    && isLatestUserVoice
-    && wavBase64
-    && usesNativeAudioInput(chatModel)
-  ) {
-    const parts: ChatContentPart[] = [
-      {
-        type: 'text',
-        text: 'The user sent a voice message while practicing English. Listen and respond naturally; give brief pronunciation or grammar feedback when helpful.',
-      },
-      { type: 'input_audio', input_audio: { data: wavBase64, format: 'wav' } },
-    ]
-    return { role: 'user', content: parts }
-  }
-  if (m.role === 'user' && m.source === 'voice') {
-    return {
-      role: 'user',
-      content:
-        '[Earlier voice message from the user — raw audio is not re-sent in this request.]',
-    }
-  }
-  return { role: m.role, content: m.content }
-}
-
 const LS_CHAT_MESSAGES = 'voxsy_chatMessages'
+const LS_SESSION_ID = 'voxsy_sessionId'
 
 function trimTrailingEmptyAssistant(msgs: ChatMessage[]): ChatMessage[] {
   const out = [...msgs]
@@ -73,8 +42,13 @@ function loadPersistedMessages(): ChatMessage[] {
       let content = typeof o.content === 'string' ? o.content : ''
       const source =
         o.source === 'voice' || o.source === 'text' ? o.source : undefined
+      const responseType =
+        o.responseType === 'dialogue' || o.responseType === 'feedback'
+          ? o.responseType
+          : undefined
       const msg: ChatMessage = { id, role: o.role, content }
       if (source) msg.source = source
+      if (responseType) msg.responseType = responseType
       if (msg.role === 'user' && msg.source === 'voice' && !content.trim()) {
         content = '(Voice message)'
         msg.content = content
@@ -92,11 +66,12 @@ function persistMessages(msgs: ChatMessage[]) {
     localStorage.removeItem(LS_CHAT_MESSAGES)
     return
   }
-  const serializable = msgs.map(({ id, role, content, source }) => ({
+  const serializable = msgs.map(({ id, role, content, source, responseType }) => ({
     id,
     role,
     content,
     ...(source ? { source } : {}),
+    ...(responseType ? { responseType } : {}),
   }))
   localStorage.setItem(LS_CHAT_MESSAGES, JSON.stringify(serializable))
 }
@@ -105,6 +80,7 @@ export const useChatStore = defineStore('chat', () => {
   const settings = useSettingsStore()
   const messages = ref<ChatMessage[]>(loadPersistedMessages())
   const isStreaming = ref(false)
+  const sessionId = ref<string | null>(localStorage.getItem(LS_SESSION_ID))
 
   watch(
     messages,
@@ -115,12 +91,22 @@ export const useChatStore = defineStore('chat', () => {
     { deep: true },
   )
 
+  async function ensureSession() {
+    if (sessionId.value) return sessionId.value
+    const started = await startSession(settings.apiBaseUrl)
+    sessionId.value = started.sessionId
+    localStorage.setItem(LS_SESSION_ID, started.sessionId)
+    return started.sessionId
+  }
+
   async function sendMessage(
     content: string,
     source: 'text' | 'voice' = 'text',
     audioUrl?: string,
     voiceBlob?: Blob | null,
   ) {
+    const sid = await ensureSession()
+
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
@@ -141,10 +127,8 @@ export const useChatStore = defineStore('chat', () => {
     isStreaming.value = true
 
     try {
-      const hist = messages.value.slice(0, -1)
-      const lastIdx = hist.length - 1
-
-      let voiceWavBase64: string | undefined
+      let contentToSend = content
+      let audioBase64: string | undefined
       if (source === 'voice') {
         if (!voiceBlob || !usesNativeAudioInput(settings.chatModel)) {
           messages.value[assistantIdx].content =
@@ -158,50 +142,79 @@ export const useChatStore = defineStore('chat', () => {
             filename: 'voice-message.webm',
           })
           messages.value[userIdx].content = transcript
+          contentToSend = transcript
         } catch (e) {
           console.error('Could not transcribe voice:', e)
           messages.value[userIdx].content = ''
+          contentToSend = ''
         }
-
+        if (!contentToSend.trim()) {
+          messages.value[assistantIdx].content =
+            'Error: Could not transcribe audio. Try recording again.'
+          return
+        }
         try {
-          voiceWavBase64 = await blobToWavBase64(voiceBlob)
+          audioBase64 = await blobToWavBase64(voiceBlob)
         } catch (e) {
           console.error('Could not encode voice:', e)
-        }
-        if (!voiceWavBase64) {
           messages.value[assistantIdx].content =
-            'Error: Could not prepare audio. Try recording again.'
+            'Error: Could not encode voice audio. Try recording again.'
           return
         }
       }
 
-      const apiMessages: ChatApiMessage[] = [
-        { role: 'system', content: settings.systemPrompt },
-        ...hist.map((m, idx) =>
-          toApiMessage(
-            m,
-            idx === lastIdx && m.role === 'user' && m.source === 'voice',
-            voiceWavBase64,
-            settings.chatModel,
-          ),
-        ),
-      ]
-
       const requestModel =
         source === 'voice' ? settings.chatModel : settings.textChatModel
-
-      const body: Parameters<typeof streamChat>[1] = {
+      const response = await streamSessionMessage(settings.apiBaseUrl, sid, {
+        content: contentToSend.trim(),
+        source,
         model: requestModel,
-        messages: apiMessages,
-      }
-      if (source === 'voice' && usesNativeAudioInput(settings.chatModel)) {
-        body.modalities = ['text']
-      }
+        ...(audioBase64 ? { audioBase64, audioFormat: 'wav' } : {}),
+      })
 
-      const response = await streamChat(settings.apiBaseUrl, body)
+      for await (const payload of parseSSEStream(response)) {
+        if (payload.meta?.responseType) {
+          messages.value[assistantIdx].responseType = payload.meta.responseType
+          continue
+        }
+        if (!payload.chunk) continue
+        messages.value[assistantIdx].content += payload.chunk
+      }
+    } catch (error) {
+      messages.value[assistantIdx].content =
+        `Error: ${error instanceof Error ? error.message : String(error)}`
+    } finally {
+      isStreaming.value = false
+      persistMessages(messages.value)
+    }
+  }
 
-      for await (const chunk of parseSSEStream(response)) {
-        messages.value[assistantIdx].content += chunk
+  async function requestFeedback() {
+    if (isStreaming.value || messages.value.length === 0) return
+    const sid = await ensureSession()
+
+    messages.value.push({
+      id: crypto.randomUUID(),
+      role: 'assistant',
+      content: '',
+      responseType: 'feedback',
+    })
+    const assistantIdx = messages.value.length - 1
+    isStreaming.value = true
+
+    try {
+      const response = await streamSessionFeedback(
+        settings.apiBaseUrl,
+        sid,
+        settings.textChatModel,
+      )
+      for await (const payload of parseSSEStream(response)) {
+        if (payload.meta?.responseType) {
+          messages.value[assistantIdx].responseType = payload.meta.responseType
+          continue
+        }
+        if (!payload.chunk) continue
+        messages.value[assistantIdx].content += payload.chunk
       }
     } catch (error) {
       messages.value[assistantIdx].content =
@@ -217,7 +230,17 @@ export const useChatStore = defineStore('chat', () => {
       if (m.audioUrl) URL.revokeObjectURL(m.audioUrl)
     }
     messages.value = []
+    sessionId.value = null
+    localStorage.removeItem(LS_SESSION_ID)
   }
 
-  return { messages, isStreaming, sendMessage, clearMessages }
+  return {
+    messages,
+    isStreaming,
+    sessionId,
+    sendMessage,
+    requestFeedback,
+    clearMessages,
+  }
 })
+

@@ -13,6 +13,22 @@ export type StreamChatBody = {
   modalities?: string[]
 }
 
+export type SessionStartResponse = {
+  sessionId: string
+}
+
+export type SessionMessageBody = {
+  content: string
+  source: 'text' | 'voice'
+  model: string
+  audioBase64?: string
+  audioFormat?: string
+}
+
+export type SessionStreamMeta = {
+  responseType?: 'dialogue' | 'feedback'
+}
+
 export async function streamChat(
   baseUrl: string,
   body: StreamChatBody,
@@ -29,6 +45,68 @@ export async function streamChat(
   }
 
   return response
+}
+
+export async function startSession(baseUrl: string): Promise<SessionStartResponse> {
+  const response = await fetch(`${baseUrl}/api/session/start`, {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`Session start failed (${response.status}): ${text}`)
+  }
+  return response.json() as Promise<SessionStartResponse>
+}
+
+export async function streamSessionMessage(
+  baseUrl: string,
+  sessionId: string,
+  body: SessionMessageBody,
+): Promise<Response> {
+  const response = await fetch(`${baseUrl}/api/session/${sessionId}/message`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`Session message failed (${response.status}): ${text}`)
+  }
+  return response
+}
+
+export async function streamSessionFeedback(
+  baseUrl: string,
+  sessionId: string,
+  model: string,
+): Promise<Response> {
+  const response = await fetch(`${baseUrl}/api/session/${sessionId}/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model }),
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`Session feedback failed (${response.status}): ${text}`)
+  }
+  return response
+}
+
+export async function getLearnerMemory(baseUrl: string): Promise<{ focusAreas: Array<{ errorKey: string; hint: string }> }> {
+  const response = await fetch(`${baseUrl}/api/learner-memory`)
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`Memory fetch failed (${response.status}): ${text}`)
+  }
+  return response.json() as Promise<{ focusAreas: Array<{ errorKey: string; hint: string }> }>
+}
+
+export async function resetLearnerMemory(baseUrl: string): Promise<void> {
+  const response = await fetch(`${baseUrl}/api/learner-memory`, { method: 'DELETE' })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`Memory reset failed (${response.status}): ${text}`)
+  }
 }
 
 export async function synthesizeSpeech(
@@ -117,7 +195,9 @@ export async function transcribeSpeech(
   return (payload.text ?? '').trim()
 }
 
-export async function* parseSSEStream(response: Response): AsyncGenerator<string> {
+export async function* parseSSEStream(
+  response: Response,
+): AsyncGenerator<{ chunk?: string; meta?: SessionStreamMeta }> {
   const reader = response.body!.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
@@ -139,8 +219,14 @@ export async function* parseSSEStream(response: Response): AsyncGenerator<string
 
         try {
           const parsed = JSON.parse(data)
+          if (trimmed.startsWith('event: meta')) continue
+          const responseType = parsed.responseType
+          if (responseType === 'dialogue' || responseType === 'feedback') {
+            yield { meta: { responseType } }
+            continue
+          }
           const content = parsed.choices?.[0]?.delta?.content
-          if (content) yield content
+          if (content) yield { chunk: content }
         } catch {
           // skip malformed chunks
         }

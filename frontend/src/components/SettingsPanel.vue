@@ -1,6 +1,8 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import { useSettingsStore } from '../stores/settings'
 import { useChatStore } from '../stores/chat'
+import { resetLearnerMemory } from '../services/api'
 import {
   TEXT_CHAT_MODEL_OPTIONS,
   VOICE_CHAT_MODEL_OPTIONS,
@@ -13,9 +15,20 @@ const emit = defineEmits<{ 'update:open': [value: boolean] }>()
 
 const settings = useSettingsStore()
 const chat = useChatStore()
+const isResettingMemory = ref(false)
 
 function close() {
   emit('update:open', false)
+}
+
+async function clearLearnerMemory() {
+  if (isResettingMemory.value) return
+  isResettingMemory.value = true
+  try {
+    await resetLearnerMemory(settings.apiBaseUrl)
+  } finally {
+    isResettingMemory.value = false
+  }
 }
 </script>
 
@@ -109,6 +122,9 @@ function close() {
 
           <button class="danger-btn" @click="chat.clearMessages()">
             Clear conversation
+          </button>
+          <button class="danger-btn" :disabled="isResettingMemory" @click="clearLearnerMemory">
+            Reset memory between sessions
           </button>
         </div>
       </aside>

@@ -4,4 +4,5 @@ export interface ChatMessage {
   content: string
   source?: 'text' | 'voice'
   audioUrl?: string
+  responseType?: 'dialogue' | 'feedback'
 }

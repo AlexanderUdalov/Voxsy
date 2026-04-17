@@ -230,7 +230,7 @@ const isUserVoiceBubble = () =>
 </script>
 
 <template>
-  <div :class="['bubble', `bubble--${message.role}`]">
+  <div :class="['bubble', `bubble--${message.role}`, message.responseType === 'feedback' ? 'bubble--feedback' : '']">
     <div
       class="bubble-content"
       :class="{ 'bubble-content--voice-user': isUserVoiceBubble() }"
@@ -329,6 +329,10 @@ const isUserVoiceBubble = () =>
   color: var(--text);
   border-bottom-left-radius: 4px;
   box-shadow: var(--shadow);
+}
+
+.bubble--feedback .bubble-content {
+  border: 1px solid var(--accent);
 }
 
 .voice-transcript {

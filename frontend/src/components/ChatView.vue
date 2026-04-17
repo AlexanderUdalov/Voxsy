@@ -101,6 +101,10 @@ async function send() {
   await chatStore.sendMessage(hasVoice ? '' : text, source, audioUrl, voiceBlob)
 }
 
+async function requestFeedback() {
+  await chatStore.requestFeedback()
+}
+
 function handleKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
@@ -207,6 +211,15 @@ onUnmounted(() => {
     </div>
 
     <div class="input-area">
+      <div class="session-actions">
+        <button
+          class="feedback-btn"
+          @click="requestFeedback"
+          :disabled="chatStore.isStreaming || chatStore.messages.length === 0"
+        >
+          Give dialogue feedback
+        </button>
+      </div>
       <div class="input-row">
         <div v-if="pendingVoiceBlob && pendingAudioUrl" class="voice-draft">
           <div class="voice-draft-row">
@@ -355,6 +368,27 @@ onUnmounted(() => {
   gap: 8px;
   max-width: 800px;
   margin: 0 auto;
+}
+
+.session-actions {
+  max-width: 800px;
+  margin: 0 auto 8px;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.feedback-btn {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text-secondary);
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.feedback-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .voice-limit-note {
