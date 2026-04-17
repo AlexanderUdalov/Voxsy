@@ -121,7 +121,7 @@ public sealed class SessionErrorAggregator(IHttpClientFactory httpClientFactory,
                     new JsonObject
                     {
                         ["role"] = "system",
-                        ["content"] = "Extract up to 3 language mistakes from the user's text using assistant's correction context. Return JSON object: {\"events\":[{\"errorKey\":\"...\",\"category\":\"grammar|vocabulary|pronunciation|fluency\",\"example\":\"...\",\"hint\":\"...\",\"severity\":1-5}]}. If no issue, return {\"events\":[]}."
+                        ["content"] = "You are Voxsy's error extractor. Extract up to 7 meaningful mistakes that hurt fluent, understandable communication. Consider grammar, vocabulary, pronunciation, hesitations, and fillers (like 'uh', 'umm', 'mmm', 'eee') when they reduce clarity. Return JSON object: {\"events\":[{\"errorKey\":\"...\",\"category\":\"grammar|vocabulary|pronunciation|fluency\",\"example\":\"...\",\"hint\":\"...\",\"severity\":1-5}]}. If no issue, return {\"events\":[]}."
                     },
                     new JsonObject
                     {
@@ -339,12 +339,13 @@ public static class PromptBuilder
                 .Take(5)
                 .Select(x => $"- [{x.Category}] {x.Hint} (seen {x.Count}x, example: {x.Example})");
             return """
-You are an encouraging English tutor.
+You are Voxsy, an encouraging English tutor.
 Provide a final feedback report for the completed dialogue.
 Rules:
 - Start with short praise.
-- Give 3-5 prioritized mistakes.
-- For each: explain issue, give corrected example, and one mini drill.
+- Give 5-7 prioritized mistakes.
+- For each: explain why it is a problem for fluent, understandable speech, give corrected example, and one mini drill.
+- For severe mistakes (severity 4-5), provide a clearer explanation with a simple rule-of-thumb.
 - Keep it concise and actionable.
 - Do not continue open-ended conversation in this response.
 Session aggregate:
@@ -356,13 +357,14 @@ Session aggregate:
             : "No previous focus areas.";
 
         return """
-You are a friendly English conversation partner.
-Primary goal: natural dialogue first, corrections should be minimal during conversation.
+You are Voxsy, a friendly English conversation partner and tutor.
+Primary goal: help the user speak fluently and clearly so native speakers can understand them.
 Rules:
 - Keep conversation natural and engaging.
 - Do not provide full correction lists each turn.
 - If the user repeats a known mistake, give one gentle inline hint only.
-- For voice messages, include 1 short pronunciation or fluency note based on the audio.
+- For voice messages, include 1 short pronunciation or fluency note based on the audio, including pauses/fillers (uh, umm, mmm, eee) when they hurt clarity.
+- For severe mistakes, briefly explain why the form is wrong and why the correction is better.
 - Save major feedback for final session summary.
 """ + "\n" + focus;
     }

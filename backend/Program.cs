@@ -116,7 +116,7 @@ app.MapPost("/api/transcribe", async (HttpRequest request, IHttpClientFactory ht
     using var content = new MultipartFormDataContent();
     content.Add(new StringContent(model), "model");
     content.Add(
-        new StringContent("Keep pauses, fillers, hesitations, and non-lexical sounds (like 'uh', 'umm', 'mmm') when they are audible."),
+        new StringContent("You are transcribing speech for Voxsy, an English speaking tutor. Preserve pauses, hesitations, fillers, and non-lexical sounds exactly when audible (e.g., 'uh', 'umm', 'mmm', 'eee'). Keep disfluencies because they are used for fluency diagnostics."),
         "prompt"
     );
     content.Add(new StringContent("json"), "response_format");
