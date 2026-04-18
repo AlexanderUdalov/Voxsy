@@ -16,7 +16,8 @@ const isRecording = ref(false)
 const pendingAudioUrl = ref<string | undefined>()
 const pendingVoiceBlob = ref<Blob | undefined>()
 const recordingNotice = ref('')
-const copyState = ref<'idle' | 'ok' | 'error'>('idle')
+const commandNotice = ref('Commands: /copy, /feedback')
+const commandNoticeTone = ref<'muted' | 'ok' | 'error'>('muted')
 
 const voiceInputOk = computed(() => usesNativeAudioInput(settingsStore.chatModel))
 
@@ -25,7 +26,7 @@ const micBlockedByText = computed(() => inputText.value.trim().length > 0)
 let mediaRecorder: MediaRecorder | null = null
 let audioChunks: Blob[] = []
 let maxDurationTimeout: number | null = null
-let copyResetTimeout: number | null = null
+let commandNoticeResetTimeout: number | null = null
 
 const MAX_REQUEST_BYTES = 10 * 1024 * 1024 // 10 MB
 const WAV_BASE64_BYTES_PER_SECOND_AT_48K = 48_000 * 2 * (4 / 3)
@@ -33,19 +34,30 @@ const MAX_VOICE_SECONDS = Math.floor(
   MAX_REQUEST_BYTES / WAV_BASE64_BYTES_PER_SECOND_AT_48K,
 )
 
-function clearCopyStateTimer() {
-  if (copyResetTimeout !== null) {
-    window.clearTimeout(copyResetTimeout)
-    copyResetTimeout = null
+function clearCommandNoticeTimer() {
+  if (commandNoticeResetTimeout !== null) {
+    window.clearTimeout(commandNoticeResetTimeout)
+    commandNoticeResetTimeout = null
   }
 }
 
-function scheduleCopyStateReset() {
-  clearCopyStateTimer()
-  copyResetTimeout = window.setTimeout(() => {
-    copyState.value = 'idle'
-    copyResetTimeout = null
+function scheduleCommandNoticeReset() {
+  clearCommandNoticeTimer()
+  commandNoticeResetTimeout = window.setTimeout(() => {
+    commandNotice.value = 'Commands: /copy, /feedback'
+    commandNoticeTone.value = 'muted'
+    commandNoticeResetTimeout = null
   }, 2000)
+}
+
+function setCommandNotice(
+  text: string,
+  tone: 'muted' | 'ok' | 'error',
+  autoReset = true,
+) {
+  commandNotice.value = text
+  commandNoticeTone.value = tone
+  if (autoReset) scheduleCommandNoticeReset()
 }
 
 function roleLabel(role: 'user' | 'assistant') {
@@ -79,18 +91,19 @@ function fallbackCopyText(text: string): boolean {
 
 async function copyHistory() {
   const text = copyableHistory.value
-  if (!text) return
+  if (!text) {
+    setCommandNotice('Nothing to copy yet.', 'error')
+    return
+  }
   try {
     if (navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text)
     } else if (!fallbackCopyText(text)) {
       throw new Error('Clipboard is unavailable')
     }
-    copyState.value = 'ok'
+    setCommandNotice('Chat history copied.', 'ok')
   } catch {
-    copyState.value = 'error'
-  } finally {
-    scheduleCopyStateReset()
+    setCommandNotice('Could not copy chat history.', 'error')
   }
 }
 
@@ -153,6 +166,29 @@ async function send() {
   if ((!text && !hasVoice) || chatStore.isStreaming) return
   if (hasVoice && !voiceInputOk.value) return
 
+  if (!hasVoice && text.startsWith('/')) {
+    inputText.value = ''
+    const command = text.split(/\s+/)[0]?.toLowerCase()
+
+    if (command === '/copy') {
+      await copyHistory()
+      return
+    }
+
+    if (command === '/feedback') {
+      if (chatStore.messages.length === 0) {
+        setCommandNotice('Start a dialogue before requesting feedback.', 'error')
+        return
+      }
+      await chatStore.requestFeedback()
+      setCommandNotice('Feedback requested.', 'ok')
+      return
+    }
+
+    setCommandNotice(`Unknown command: ${command ?? text}`, 'error')
+    return
+  }
+
   const source = hasVoice ? ('voice' as const) : ('text' as const)
   const audioUrl = pendingAudioUrl.value
   const voiceBlob = pendingVoiceBlob.value
@@ -162,10 +198,6 @@ async function send() {
   pendingVoiceBlob.value = undefined
 
   await chatStore.sendMessage(hasVoice ? '' : text, source, audioUrl, voiceBlob)
-}
-
-async function requestFeedback() {
-  await chatStore.requestFeedback()
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -250,7 +282,7 @@ const micTitle = computed(() => {
 
 onUnmounted(() => {
   clearRecordingTimer()
-  clearCopyStateTimer()
+  clearCommandNoticeTimer()
   if (pendingAudioUrl.value) URL.revokeObjectURL(pendingAudioUrl.value)
   stopRecording()
 })
@@ -276,27 +308,15 @@ onUnmounted(() => {
 
     <div class="input-area">
       <div class="session-actions">
-        <button
-          class="copy-btn"
-          @click="copyHistory"
-          :disabled="!copyableHistory"
-          :title="copyState === 'error' ? 'Could not copy history' : 'Copy chat history'"
+        <p
+          class="command-note"
+          :class="{
+            'command-note--ok': commandNoticeTone === 'ok',
+            'command-note--error': commandNoticeTone === 'error',
+          }"
         >
-          {{
-            copyState === 'ok'
-              ? 'Copied'
-              : copyState === 'error'
-                ? 'Copy failed'
-                : 'Copy history'
-          }}
-        </button>
-        <button
-          class="feedback-btn"
-          @click="requestFeedback"
-          :disabled="chatStore.isStreaming || chatStore.messages.length === 0"
-        >
-          Give dialogue feedback
-        </button>
+          {{ commandNotice }}
+        </p>
       </div>
       <div class="input-row">
         <div v-if="pendingVoiceBlob && pendingAudioUrl" class="voice-draft">
@@ -320,7 +340,7 @@ onUnmounted(() => {
           ref="inputEl"
           v-model="inputText"
           @keydown="handleKeydown"
-          placeholder="Type a message…"
+          placeholder="Type a message… (/copy, /feedback)"
           rows="1"
           class="text-input"
         />
@@ -450,26 +470,23 @@ onUnmounted(() => {
 
 .session-actions {
   max-width: 800px;
-  margin: 0 auto 8px;
+  margin: 0 auto 6px;
   display: flex;
-  gap: 8px;
-  justify-content: flex-end;
+  justify-content: flex-start;
 }
 
-.copy-btn,
-.feedback-btn {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg);
+.command-note {
+  margin: 0;
   color: var(--text-secondary);
-  padding: 6px 10px;
   font-size: 12px;
 }
 
-.copy-btn:disabled,
-.feedback-btn:disabled {
-  opacity: 0.5;
-  cursor: default;
+.command-note--ok {
+  color: #1d7f3f;
+}
+
+.command-note--error {
+  color: var(--danger);
 }
 
 .voice-limit-note {
