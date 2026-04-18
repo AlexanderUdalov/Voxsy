@@ -16,6 +16,7 @@ const isRecording = ref(false)
 const pendingAudioUrl = ref<string | undefined>()
 const pendingVoiceBlob = ref<Blob | undefined>()
 const recordingNotice = ref('')
+const copyState = ref<'idle' | 'ok' | 'error'>('idle')
 
 const voiceInputOk = computed(() => usesNativeAudioInput(settingsStore.chatModel))
 
@@ -24,12 +25,74 @@ const micBlockedByText = computed(() => inputText.value.trim().length > 0)
 let mediaRecorder: MediaRecorder | null = null
 let audioChunks: Blob[] = []
 let maxDurationTimeout: number | null = null
+let copyResetTimeout: number | null = null
 
 const MAX_REQUEST_BYTES = 10 * 1024 * 1024 // 10 MB
 const WAV_BASE64_BYTES_PER_SECOND_AT_48K = 48_000 * 2 * (4 / 3)
 const MAX_VOICE_SECONDS = Math.floor(
   MAX_REQUEST_BYTES / WAV_BASE64_BYTES_PER_SECOND_AT_48K,
 )
+
+function clearCopyStateTimer() {
+  if (copyResetTimeout !== null) {
+    window.clearTimeout(copyResetTimeout)
+    copyResetTimeout = null
+  }
+}
+
+function scheduleCopyStateReset() {
+  clearCopyStateTimer()
+  copyResetTimeout = window.setTimeout(() => {
+    copyState.value = 'idle'
+    copyResetTimeout = null
+  }, 2000)
+}
+
+function roleLabel(role: 'user' | 'assistant') {
+  return role === 'assistant' ? 'Voxsy' : 'User'
+}
+
+const copyableHistory = computed(() =>
+  chatStore.messages
+    .filter((msg) => msg.content.trim().length > 0)
+    .map((msg) => `${roleLabel(msg.role)}: ${msg.content.trim()}`)
+    .join('\n\n'),
+)
+
+function fallbackCopyText(text: string): boolean {
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.setAttribute('readonly', '')
+  ta.style.position = 'fixed'
+  ta.style.opacity = '0'
+  document.body.appendChild(ta)
+  ta.select()
+  let copied = false
+  try {
+    copied = document.execCommand('copy')
+  } catch {
+    copied = false
+  }
+  document.body.removeChild(ta)
+  return copied
+}
+
+async function copyHistory() {
+  const text = copyableHistory.value
+  if (!text) return
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+    } else if (!fallbackCopyText(text)) {
+      throw new Error('Clipboard is unavailable')
+    }
+    copyState.value = 'ok'
+  } catch {
+    copyState.value = 'error'
+  } finally {
+    scheduleCopyStateReset()
+  }
+}
 
 function scrollToBottom() {
   if (messagesEl.value) {
@@ -187,6 +250,7 @@ const micTitle = computed(() => {
 
 onUnmounted(() => {
   clearRecordingTimer()
+  clearCopyStateTimer()
   if (pendingAudioUrl.value) URL.revokeObjectURL(pendingAudioUrl.value)
   stopRecording()
 })
@@ -212,6 +276,20 @@ onUnmounted(() => {
 
     <div class="input-area">
       <div class="session-actions">
+        <button
+          class="copy-btn"
+          @click="copyHistory"
+          :disabled="!copyableHistory"
+          :title="copyState === 'error' ? 'Could not copy history' : 'Copy chat history'"
+        >
+          {{
+            copyState === 'ok'
+              ? 'Copied'
+              : copyState === 'error'
+                ? 'Copy failed'
+                : 'Copy history'
+          }}
+        </button>
         <button
           class="feedback-btn"
           @click="requestFeedback"
@@ -374,9 +452,11 @@ onUnmounted(() => {
   max-width: 800px;
   margin: 0 auto 8px;
   display: flex;
+  gap: 8px;
   justify-content: flex-end;
 }
 
+.copy-btn,
 .feedback-btn {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -386,6 +466,7 @@ onUnmounted(() => {
   font-size: 12px;
 }
 
+.copy-btn:disabled,
 .feedback-btn:disabled {
   opacity: 0.5;
   cursor: default;
