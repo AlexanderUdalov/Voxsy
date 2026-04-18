@@ -16,8 +16,18 @@ const isRecording = ref(false)
 const pendingAudioUrl = ref<string | undefined>()
 const pendingVoiceBlob = ref<Blob | undefined>()
 const recordingNotice = ref('')
-const commandNotice = ref('Commands: /copy, /feedback')
+const commandNotice = ref('')
 const commandNoticeTone = ref<'muted' | 'ok' | 'error'>('muted')
+const commandCatalog = [
+  {
+    name: '/copy',
+    description: 'Copy the current chat history to clipboard.',
+  },
+  {
+    name: '/feedback',
+    description: 'Request final feedback for this dialogue.',
+  },
+] as const
 
 const voiceInputOk = computed(() => usesNativeAudioInput(settingsStore.chatModel))
 
@@ -44,7 +54,7 @@ function clearCommandNoticeTimer() {
 function scheduleCommandNoticeReset() {
   clearCommandNoticeTimer()
   commandNoticeResetTimeout = window.setTimeout(() => {
-    commandNotice.value = 'Commands: /copy, /feedback'
+    commandNotice.value = ''
     commandNoticeTone.value = 'muted'
     commandNoticeResetTimeout = null
   }, 2000)
@@ -69,6 +79,23 @@ const copyableHistory = computed(() =>
     .filter((msg) => msg.content.trim().length > 0)
     .map((msg) => `${roleLabel(msg.role)}: ${msg.content.trim()}`)
     .join('\n\n'),
+)
+
+const commandQuery = computed(() => {
+  const trimmed = inputText.value.trimStart()
+  if (!trimmed.startsWith('/')) return null
+  const token = trimmed.split(/\s+/)[0]
+  return token ? token.toLowerCase() : '/'
+})
+
+const suggestedCommands = computed(() => {
+  const query = commandQuery.value
+  if (!query) return []
+  return commandCatalog.filter((entry) => entry.name.startsWith(query))
+})
+
+const showCommandTooltip = computed(
+  () => !pendingVoiceBlob.value && suggestedCommands.value.length > 0,
 )
 
 function fallbackCopyText(text: string): boolean {
@@ -167,15 +194,16 @@ async function send() {
   if (hasVoice && !voiceInputOk.value) return
 
   if (!hasVoice && text.startsWith('/')) {
-    inputText.value = ''
     const command = text.split(/\s+/)[0]?.toLowerCase()
 
     if (command === '/copy') {
+      inputText.value = ''
       await copyHistory()
       return
     }
 
     if (command === '/feedback') {
+      inputText.value = ''
       if (chatStore.messages.length === 0) {
         setCommandNotice('Start a dialogue before requesting feedback.', 'error')
         return
@@ -307,7 +335,7 @@ onUnmounted(() => {
     </div>
 
     <div class="input-area">
-      <div class="session-actions">
+      <div v-if="commandNotice" class="session-actions">
         <p
           class="command-note"
           :class="{
@@ -319,31 +347,46 @@ onUnmounted(() => {
         </p>
       </div>
       <div class="input-row">
-        <div v-if="pendingVoiceBlob && pendingAudioUrl" class="voice-draft">
-          <div class="voice-draft-row">
-            <VoiceSchematicPlayer
-              :src="pendingAudioUrl"
-              variant="composer"
+        <div class="composer-column">
+          <div v-if="pendingVoiceBlob && pendingAudioUrl" class="voice-draft">
+            <div class="voice-draft-row">
+              <VoiceSchematicPlayer
+                :src="pendingAudioUrl"
+                variant="composer"
+              />
+              <button
+                type="button"
+                class="voice-draft-remove"
+                @click="discardVoiceDraft"
+                title="Remove recording"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+          <div v-else class="text-input-wrap">
+            <div v-if="showCommandTooltip" class="command-tooltip" role="status">
+              <div
+                v-for="entry in suggestedCommands"
+                :key="entry.name"
+                class="command-tooltip-item"
+              >
+                <p class="command-tooltip-name">{{ entry.name }}</p>
+                <p class="command-tooltip-description">
+                  {{ entry.description }}
+                </p>
+              </div>
+            </div>
+            <textarea
+              ref="inputEl"
+              v-model="inputText"
+              @keydown="handleKeydown"
+              placeholder="Type measage"
+              rows="1"
+              class="text-input"
             />
-            <button
-              type="button"
-              class="voice-draft-remove"
-              @click="discardVoiceDraft"
-              title="Remove recording"
-            >
-              ×
-            </button>
           </div>
         </div>
-        <textarea
-          v-else
-          ref="inputEl"
-          v-model="inputText"
-          @keydown="handleKeydown"
-          placeholder="Type a message… (/copy, /feedback)"
-          rows="1"
-          class="text-input"
-        />
 
         <button
           class="action-btn mic-btn"
@@ -468,11 +511,55 @@ onUnmounted(() => {
   margin: 0 auto;
 }
 
+.composer-column {
+  flex: 1;
+  min-width: 0;
+}
+
 .session-actions {
   max-width: 800px;
   margin: 0 auto 6px;
   display: flex;
   justify-content: flex-start;
+}
+
+.text-input-wrap {
+  position: relative;
+}
+
+.command-tooltip {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.12);
+  padding: 4px;
+  z-index: 3;
+}
+
+.command-tooltip-item {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+}
+
+.command-tooltip-item + .command-tooltip-item {
+  margin-top: 2px;
+}
+
+.command-tooltip-name {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.command-tooltip-description {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
 .command-note {
